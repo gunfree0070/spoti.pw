@@ -1,5 +1,6 @@
 #import "SGModPage.h"
 #import "SGPageStyle.h"
+#import "SGTranslate.h"
 #import "SGGlowSwitch.h"
 #import "Core/SGCore.h"
 
@@ -202,7 +203,7 @@ static UIView *valueAndChevron(NSString *text) {
     UILabel *label = [UILabel new];
     label.font = SGTitleFont();
     label.textColor = SGGrey();
-    label.text = text;
+    label.text = SGTranslate(text);
     [label sizeToFit];
     UIImageView *chevron = SGSymbolView(@"chevron.right", 13, UIImageSymbolWeightSemibold, 16);
     CGFloat height = MAX(label.bounds.size.height, chevron.bounds.size.height);
@@ -295,7 +296,7 @@ static BOOL lockedRowOn(SGModRow *row) {
         SGModRow *row = [self rowAt:[self.tableView indexPathForCell:cell]];
         UILabel *label = (UILabel *)cell.accessoryView;
         if (!row.value || row.page || ![label isKindOfClass:UILabel.class]) continue;
-        label.text = row.value();
+        label.text = SGTranslate(row.value());
         [label sizeToFit];
         [cell setNeedsLayout];
     }
@@ -354,12 +355,13 @@ static BOOL lockedRowOn(SGModRow *row) {
         if (row.glows) {
             SGGlowSwitch *glow = [SGGlowSwitch new];
             glow.on = on;
-            glow.accessibilityLabel = row.title;
+            glow.accessibilityLabel = SGTranslate(row.title);
             toggle = glow;
         } else {
             UISwitch *plain = [UISwitch new];
             plain.onTintColor = SGGreen();
             plain.on = on;
+            plain.accessibilityLabel = SGTranslate(row.title);
             toggle = plain;
         }
         toggle.enabled = !locked;
@@ -376,7 +378,7 @@ static BOOL lockedRowOn(SGModRow *row) {
         UILabel *label = [UILabel new];
         label.font = SGTitleFont();
         label.textColor = SGGrey();
-        label.text = row.value();
+        label.text = SGTranslate(row.value());
         [label sizeToFit];
         cell.accessoryView = label;
         cell.selectionStyle = row.action ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
@@ -407,7 +409,7 @@ static BOOL lockedRowOn(SGModRow *row) {
     [info setImage:[UIImage systemImageNamed:@"info.circle" withConfiguration:symbol] forState:UIControlStateNormal];
     info.tintColor = SGGrey();
     info.tag = tag;
-    info.accessibilityLabel = @"About this switch";
+        info.accessibilityLabel = SGTranslate(@"About this switch");
     [info addTarget:self action:@selector(infoTapped:) forControlEvents:UIControlEventTouchUpInside];
     [toggle sizeToFit];
     CGFloat side = 30, gap = 8, height = MAX(side, toggle.bounds.size.height);
@@ -421,8 +423,8 @@ static BOOL lockedRowOn(SGModRow *row) {
 
 - (void)infoTapped:(UIButton *)button {
     SGModRow *row = [self rowAt:[NSIndexPath indexPathForRow:button.tag % 1000 inSection:button.tag / 1000]];
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:row.title message:row.info preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:SGTranslate(row.title) message:SGTranslate(row.info) preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:SGTranslate(@"OK") style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
@@ -444,21 +446,22 @@ static BOOL lockedRowOn(SGModRow *row) {
 // A locked row will not move, and nothing on it says why.
 - (void)explainLock {
     UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:@"Overridden by another setting"
-                         message:@"Another switch is forcing this flag, so the row shows what it forces instead of taking a value of its own."
+        alertControllerWithTitle:SGTranslate(@"Overridden by another setting")
+                         message:SGTranslate(@"Another switch is forcing this flag, so the row shows what it forces instead of taking a value of its own.")
                   preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:SGTranslate(@"OK") style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)warn:(SGModRow *)row {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:[row.title stringByAppendingString:@" is unstable"]
-                                                                  message:row.warning
+    NSString *title = [row.title stringByAppendingString:@" is unstable"];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:SGTranslate(title)
+                                                                  message:SGTranslate(row.warning)
                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Open GitHub" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [alert addAction:[UIAlertAction actionWithTitle:SGTranslate(@"Open GitHub") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         SGOpenURL(SGRepoURL);
     }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:SGTranslate(@"OK") style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
 }
 

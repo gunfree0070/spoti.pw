@@ -1,5 +1,6 @@
 #import "SGPage.h"
 #import "SGPageStyle.h"
+#import "SGTranslate.h"
 #import "Core/SGCore.h"
 
 
@@ -13,6 +14,10 @@
 static BOOL sg_pagesConform;
 
 @implementation SGPage
+
+- (void)setTitle:(NSString *)title {
+    [super setTitle:SGTranslate(title)];
+}
 
 // Inset grouped cards on Spotify's dark grey, a hairline between the rows of a card.
 - (void)viewDidLoad {

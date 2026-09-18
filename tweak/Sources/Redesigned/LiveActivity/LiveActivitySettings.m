@@ -4,7 +4,7 @@
 #import "LiveActivity.h"
 
 static NSArray<NSString *> *viewNames(void) {
-    return @[@"Lyrics", @"Queue", @"Control menu"];
+    return @[@"가사", @"대기열", @"제어 메뉴"];
 }
 
 UIViewController *SGRLiveActivitySettingsPage(void) {

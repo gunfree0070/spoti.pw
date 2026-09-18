@@ -33,9 +33,9 @@ extension SGLyricsAttributes.Tab {
 
     var title: String {
         switch self {
-        case .controls: "Controls"
-        case .queue: "Queue"
-        case .timer: "Timer"
+        case .controls: "제어"
+        case .queue: "대기열"
+        case .timer: "타이머"
         }
     }
 }
@@ -126,11 +126,11 @@ private struct QueueView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text("Up next")
+            Text("다음 재생")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.white.opacity(0.45))
             if state.tracks.isEmpty {
-                Text("Nothing up next")
+                Text("다음 재생 없음")
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.6))
             }
@@ -161,14 +161,14 @@ private struct Summary: View {
             case .controls:
                 Text("\(state.title) · \(state.artist)")
             case .queue:
-                Text(state.tracks.first.map { "Next: \($0.title)" } ?? "Nothing up next")
+                Text(state.tracks.first.map { "다음: \($0.title)" } ?? "다음 재생 없음")
             case .timer:
                 if let end = state.timerEnd, end > Date() {
-                    Text("Music stops in \(Text(timerInterval: Date()...end, countsDown: true))")
+                    Text("음악 중지까지 \(Text(timerInterval: Date()...end, countsDown: true))")
                 } else if state.timerEndOfTrack {
-                    Text("Music stops at the end of this track")
+                    Text("이 트랙이 끝나면 음악 중지")
                 } else {
-                    Text("No sleep timer")
+                    Text("취침 타이머 없음")
                 }
             }
         }
@@ -286,15 +286,15 @@ private struct ControlsPage: View {
             .lineLimit(1)
             .invalidatableContent()
             HStack(spacing: 6) {
-                ChipButton(action: "previous", symbol: "backward.fill", label: "Previous")
+                ChipButton(action: "previous", symbol: "backward.fill", label: "이전")
                 Toggle(isOn: !state.paused, intent: SGRLiveActivityActionIntent("toggle")) { EmptyView() }
-                    .toggleStyle(ChipStyle(symbol: "play.fill", onSymbol: "pause.fill", label: "Play", onLabel: "Pause", lights: false))
-                ChipButton(action: "next", symbol: "forward.fill", label: "Next")
+                    .toggleStyle(ChipStyle(symbol: "play.fill", onSymbol: "pause.fill", label: "재생", onLabel: "일시정지", lights: false))
+                ChipButton(action: "next", symbol: "forward.fill", label: "다음")
                 Toggle(isOn: state.shuffle, intent: SGRLiveActivityActionIntent("shuffle")) { EmptyView() }
-                    .toggleStyle(ChipStyle(symbol: "shuffle", label: "Shuffle"))
+                    .toggleStyle(ChipStyle(symbol: "shuffle", label: "셔플"))
                 // Three states, so a button: the new one shows once the render lands.
                 ChipButton(action: "repeat", symbol: state.repeatMode == 2 ? "repeat.1" : "repeat",
-                           label: "Repeat", lit: state.repeatMode != 0)
+                           label: "반복", lit: state.repeatMode != 0)
                     .invalidatableContent()
             }
         }
@@ -307,7 +307,7 @@ private struct QueuePage: View {
     var body: some View {
         VStack(spacing: 4) {
             if state.tracks.isEmpty {
-                Text("Nothing up next")
+                Text("다음 재생 없음")
                     .font(.footnote)
                     .foregroundStyle(.white.opacity(0.55))
                     .frame(maxWidth: .infinity, minHeight: 60)
@@ -345,7 +345,7 @@ private struct TimerPage: View {
             if (state.timerEnd.map { $0 > Date() } ?? false) || state.timerEndOfTrack {
                 HStack(alignment: .center, spacing: 12) {
                     VStack(alignment: .leading, spacing: 0) {
-                        Text("Music stops")
+                        Text("음악 중지")
                             .font(.caption)
                             .foregroundStyle(.white.opacity(0.55))
                         if let end = state.timerEnd {
@@ -353,7 +353,7 @@ private struct TimerPage: View {
                                 .font(.system(size: 34, weight: .bold).monospacedDigit())
                                 .foregroundStyle(green)
                         } else {
-                            Text("End of track")
+                            Text("트랙 종료 시")
                                 .font(.title2.weight(.bold))
                                 .foregroundStyle(green)
                         }
@@ -361,18 +361,18 @@ private struct TimerPage: View {
                     Spacer(minLength: 0)
                     HStack(spacing: 8) {
                         if state.timerEnd != nil {
-                            ChipButton(action: "timer:add", symbol: "plus", label: "15 min")
+                            ChipButton(action: "timer:add", symbol: "plus", label: "15분")
                         }
-                        ChipButton(action: "timer:cancel", symbol: "xmark", label: "Cancel")
+                        ChipButton(action: "timer:cancel", symbol: "xmark", label: "취소")
                     }
                     .frame(width: state.timerEnd != nil ? 140 : 66)
                 }
             } else {
                 HStack(spacing: 8) {
-                    ChipButton(action: "timer:15", symbol: "moon", label: "15 min")
-                    ChipButton(action: "timer:30", symbol: "moon", label: "30 min")
-                    ChipButton(action: "timer:60", symbol: "moon", label: "1 hour")
-                    ChipButton(action: "timer:track", symbol: "music.note", label: "End of track")
+                    ChipButton(action: "timer:15", symbol: "moon", label: "15분")
+                    ChipButton(action: "timer:30", symbol: "moon", label: "30분")
+                    ChipButton(action: "timer:60", symbol: "moon", label: "1시간")
+                    ChipButton(action: "timer:track", symbol: "music.note", label: "트랙 종료 시")
                 }
             }
         }
