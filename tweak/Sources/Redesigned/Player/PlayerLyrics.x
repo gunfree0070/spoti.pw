@@ -240,7 +240,15 @@ static void placeTitleRow(SGRLyricsLayout l) {
 
 BOOL SGRPlayerLyricsAvailable(void) {
     NSString *track = SGKaraokePlayingTrack();
-    return track != nil && SGKaraokeLinesForTrack(track) != nil;
+    if (!track) return NO;
+    if (!SGKaraokeLinesForTrack(track)) {
+        // The footer can be laid out before Spotify has asked for color-lyrics.  Start the same
+        // request here so the lyrics button is not permanently dead until the full-screen page is
+        // opened first.
+        SGKaraokeRequestLyrics(track);
+        return NO;
+    }
+    return YES;
 }
 
 BOOL SGRPlayerLyricsOpen(void) {
@@ -453,6 +461,7 @@ static void replace(void) {
     NSString *track = SGRURIString(state.track.URI);
     if (!track || [track isEqualToString:_track]) return;
     _track = track;
+    SGKaraokeRequestLyrics(track);
     // Lyrics arrive a moment after the track does, and nothing announces them: the glyph is asked again
     // while they would be coming, and the lines already up wait out the same grace before they go.
     for (NSNumber *delay in @[@1, @(kLyricsGrace)]) {
@@ -479,6 +488,9 @@ static SGRPlayerLyricsWatcher *sg_watcher;
         if (!sg_open) return;
         SGRPlayerLyricsOverlay *overlay = objc_getAssociatedObject(sg_host, &kOverlayKey);
         overlay.cover.image = SGRNowPlayingArtwork(NULL, NULL);
+    }];
+    [NSNotificationCenter.defaultCenter addObserverForName:SGKaraokeLinesDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
+        SGRPlayerLyricsChanged();
     }];
     SGRequireClasses(@[
         @"_TtC19NowPlaying_ViewImpl24NowPlayingViewController",

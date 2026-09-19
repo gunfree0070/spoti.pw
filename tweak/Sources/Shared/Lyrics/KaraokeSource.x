@@ -68,6 +68,10 @@ void SGKaraokeKeepLines(NSString *track, NSArray<SGKaraokeLine *> *lines) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (sg_lyrics.count >= kKeptTracks) [sg_lyrics removeAllObjects];
         sg_lyrics[track] = lines;
+        // The redesigned player may have laid out its footer before the lyrics request finished.
+        // Tell it as soon as the first line set arrives, not only when an optional alternate row
+        // is added later.
+        [NSNotificationCenter.defaultCenter postNotificationName:SGKaraokeLinesDidChangeNotification object:track];
         requestAlternatesOnMain(track, lines);
     });
 }
