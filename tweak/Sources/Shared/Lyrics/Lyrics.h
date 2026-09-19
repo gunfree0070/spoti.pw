@@ -67,6 +67,11 @@ NSArray<SGKaraokeLine *> *SGKaraokeEstimatedLines(NSArray<NSNumber *> *starts, N
 
 NSArray<SGKaraokeLine *> *SGKaraokeLinesForTrack(NSString *trackID);   // nil until the lyrics came
 void SGKaraokeKeepLines(NSString *trackID, NSArray<SGKaraokeLine *> *lines);
+// Enriches a captured line set with a translation and, for non-Latin scripts, a pronunciation
+// row without delaying the first lyrics response. The notification is posted on the main queue when
+// either row arrives.
+extern NSString *const SGKaraokeLinesDidChangeNotification;
+void SGKaraokeRequestAlternates(NSString *trackID);
 // Asks spclient for a track's lyrics once, with the headers of Spotify's own requests, for when no
 // page of Spotify's has asked for them, e.g. with the app in the background.
 void SGKaraokeRequestLyrics(NSString *trackID);

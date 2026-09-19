@@ -9,6 +9,7 @@
 #import "Shared/LockScreenLyrics/LockScreenLyrics.h"
 #import "Shared/LyricsSources/LyricsSources.h"
 #import "Headers/SPTPlayer.h"
+#import <CoreFoundation/CoreFoundation.h>
 
 static const NSUInteger kKeptTracks = 40;
 static const NSUInteger kSeenTracks = 200;
@@ -28,6 +29,14 @@ static __weak SPTPlayerTrack *sg_lastSeen;
 static NSString *sg_lastSeenID;   // the player makes a new track object on every state it reports, so the id is what tells a change
 static BOOL sg_ownSources;   // a source of the mod's answers the color-lyrics request, not Spotify
 static char kBodyKey;
+static NSMutableSet<NSString *> *sg_alternateRequests;
+
+NSString *const SGKaraokeLinesDidChangeNotification = @"spotifyglass.karaokeLinesDidChange";
+
+static NSString *const kGoogleTranslateURL = @"https://translate.googleapis.com/translate_a/single";
+static NSString *const kAlternateSeparator = @"␟";
+
+static void requestAlternatesOnMain(NSString *trackID, NSArray<SGKaraokeLine *> *lines);
 
 static NSString *trackInURL(NSURL *url) {
     NSString *path = url.path;
@@ -59,6 +68,7 @@ void SGKaraokeKeepLines(NSString *track, NSArray<SGKaraokeLine *> *lines) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (sg_lyrics.count >= kKeptTracks) [sg_lyrics removeAllObjects];
         sg_lyrics[track] = lines;
+        requestAlternatesOnMain(track, lines);
     });
 }
 
@@ -87,6 +97,159 @@ static void completed(NSURLSessionTask *task, NSError *error) {
 
 NSArray<SGKaraokeLine *> *SGKaraokeLinesForTrack(NSString *trackID) {
     return trackID ? sg_lyrics[trackID] : nil;
+}
+
+static NSString *translationTarget(void) {
+    NSArray<NSString *> *codes = @[@"auto", @"ko", @"en", @"ja", @"zh"];
+    NSInteger index = [NSUserDefaults.standardUserDefaults integerForKey:SGKeyLyricsTranslationLanguage];
+    NSString *selected = index >= 0 && index < (NSInteger)codes.count ? codes[(NSUInteger)index] : @"auto";
+    if (![selected isEqualToString:@"auto"]) return selected;
+    NSString *preferred = NSLocale.preferredLanguages.firstObject.lowercaseString;
+    if ([preferred hasPrefix:@"ko"]) return @"ko";
+    if ([preferred hasPrefix:@"ja"]) return @"ja";
+    if ([preferred hasPrefix:@"zh"]) return @"zh";
+    return @"en";
+}
+
+static BOOL needsPronunciation(NSString *text) {
+    for (NSUInteger i = 0; i < text.length; i++) {
+        unichar c = [text characterAtIndex:i];
+        if ((c >= 0x3000 && c <= 0x9FFF) || (c >= 0xAC00 && c <= 0xD7AF)) return YES;
+    }
+    return NO;
+}
+
+static NSString *localPronunciation(NSString *text) {
+    CFMutableStringRef mutable = CFStringCreateMutableCopy(NULL, 0, (__bridge CFStringRef)text);
+    if (!mutable) return nil;
+    CFStringTransform(mutable, NULL, CFSTR("Any-Latin; Latin-ASCII"), false);
+    NSString *result = [(__bridge NSString *)mutable copy];
+    CFRelease(mutable);
+    return [result stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+}
+
+// Google returns translated text in root[0] as small segments. Joining the segments first is
+// important: a segment boundary is not always a lyric-line boundary, but our separator survives
+// both translation and romanization and lets every result go back to its original line.
+static NSString *alternateResponseText(id root, BOOL pronunciation) {
+    if (![root isKindOfClass:NSArray.class] || ![(NSArray *)root count]) return nil;
+    id rows = [(NSArray *)root firstObject];
+    if (![rows isKindOfClass:NSArray.class]) return nil;
+    NSUInteger column = pronunciation ? 3 : 0;
+    NSMutableString *text = [NSMutableString string];
+    for (id row in (NSArray *)rows) {
+        if (![row isKindOfClass:NSArray.class] || [(NSArray *)row count] <= column) continue;
+        id part = row[column];
+        if ([part isKindOfClass:NSString.class]) [text appendString:part];
+    }
+    return text.length ? text : nil;
+}
+
+static NSArray<NSString *> *alternateParts(NSString *text, NSUInteger count) {
+    if (!text.length || !count) return nil;
+    NSString *clean = [text stringByReplacingOccurrencesOfString:@"\r" withString:@""];
+    NSArray<NSString *> *parts = [clean componentsSeparatedByString:kAlternateSeparator];
+    if (parts.count < count && count == 1) parts = @[clean];
+    if (parts.count < count) return nil;
+    NSMutableArray<NSString *> *answer = [NSMutableArray arrayWithCapacity:count];
+    for (NSUInteger i = 0; i < count; i++) {
+        NSString *part = [parts[i] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        [answer addObject:part ?: @""];
+    }
+    return answer;
+}
+
+static SGKaraokeLine *alternateLine(NSString *text, SGKaraokeLine *main) {
+    if (!text.length) return nil;
+    SGKaraokeWord *word = [SGKaraokeWord new];
+    word.text = text;
+    word.start = main.start;
+    word.end = main.end;
+    SGKaraokeLine *line = [SGKaraokeLine new];
+    line.words = @[word];
+    line.start = main.start;
+    line.end = main.end;
+    return line;
+}
+
+static BOOL attachAlternateParts(NSArray<SGKaraokeLine *> *lines, NSArray<NSString *> *parts,
+                                 BOOL pronunciation) {
+    if (lines.count != parts.count) return NO;
+    BOOL changed = NO;
+    for (NSUInteger i = 0; i < lines.count; i++) {
+        SGKaraokeLine *line = lines[i];
+        NSString *text = parts[i];
+        if (!text.length || [text isEqualToString:SGKaraokeLineText(line)]) continue;
+        if (pronunciation) {
+            if (line.pronunciationText.length) continue;
+            line.pronunciationText = text;
+            line.pronunciationLine = alternateLine(text, line);
+        } else {
+            if (line.translationText.length) continue;
+            line.translationText = text;
+            line.translationLine = alternateLine(text, line);
+        }
+        changed = YES;
+    }
+    return changed;
+}
+
+static void postAlternateChange(NSString *trackID) {
+    [NSNotificationCenter.defaultCenter postNotificationName:SGKaraokeLinesDidChangeNotification object:trackID];
+}
+
+static void requestAlternateText(NSString *trackID, NSArray<SGKaraokeLine *> *lines,
+                                 NSArray<SGKaraokeLine *> *candidates, BOOL pronunciation) {
+    NSMutableArray<NSString *> *source = [NSMutableArray arrayWithCapacity:candidates.count];
+    for (SGKaraokeLine *line in candidates) [source addObject:SGKaraokeLineText(line) ?: @""];
+    NSString *query = [source componentsJoinedByString:kAlternateSeparator];
+    if (!query.length) return;
+    NSDictionary<NSString *, NSString *> *params = @{
+        @"client": @"gtx",
+        @"sl": @"auto",
+        @"tl": pronunciation ? @"ja" : translationTarget(),
+        @"dt": pronunciation ? @"rm" : @"t",
+        @"q": query,
+    };
+    SGLyricsGetJSON(SGLyricsURL(kGoogleTranslateURL, params), nil, ^(id root) {
+        if (sg_lyrics[trackID] != lines) return;
+        NSString *response = alternateResponseText(root, pronunciation);
+        NSArray<NSString *> *parts = alternateParts(response, candidates.count);
+        BOOL changed = parts && attachAlternateParts(candidates, parts, pronunciation);
+        // The online romanizer is preferred because it knows Japanese readings of kanji. If it is
+        // unavailable, CoreFoundation still provides a useful Latin fallback instead of hiding the
+        // pronunciation control completely.
+        if (!changed && pronunciation) {
+            NSMutableArray<NSString *> *local = [NSMutableArray arrayWithCapacity:candidates.count];
+            for (SGKaraokeLine *line in candidates) [local addObject:localPronunciation(SGKaraokeLineText(line)) ?: @""];
+            changed = attachAlternateParts(candidates, local, YES);
+        }
+        if (changed) postAlternateChange(trackID);
+    });
+}
+
+static void requestAlternatesOnMain(NSString *trackID, NSArray<SGKaraokeLine *> *lines) {
+    if (!trackID.length || !lines.count || [sg_alternateRequests containsObject:trackID]) return;
+    NSMutableArray<SGKaraokeLine *> *candidates = [NSMutableArray array];
+    BOOL needsTranslation = NO, needsRomanization = NO;
+    for (SGKaraokeLine *line in lines) {
+        NSString *text = SGKaraokeLineText(line);
+        if (line.breakLine || !text.length) continue;
+        [candidates addObject:line];
+        if (!line.translationText.length) needsTranslation = YES;
+        if (!line.pronunciationText.length && needsPronunciation(text)) needsRomanization = YES;
+    }
+    if (!candidates.count || (!needsTranslation && !needsRomanization)) return;
+    [sg_alternateRequests addObject:trackID];
+    if (needsTranslation) requestAlternateText(trackID, lines, candidates, NO);
+    if (needsRomanization) requestAlternateText(trackID, lines, candidates, YES);
+}
+
+void SGKaraokeRequestAlternates(NSString *trackID) {
+    if (!trackID.length) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        requestAlternatesOnMain(trackID, sg_lyrics[trackID]);
+    });
 }
 
 static void requestFromSpotify(NSString *trackID) {
@@ -251,6 +414,7 @@ static void prefetch(SPTPlayerTrack *track, NSString *trackID, SPTPlayerState *s
     sg_seenTracks = [NSMutableDictionary dictionary];
     sg_lyrics = [NSMutableDictionary dictionary];
     sg_requested = [NSMutableSet set];
+    sg_alternateRequests = [NSMutableSet set];
     sg_ownSources = SGLyricsEnabled();
     %init;
     SGLog(@"karaoke: on");

@@ -431,9 +431,8 @@ static double secant(SGSweepKnot *knots, NSUInteger i) {
 #pragma mark - the page
 
 @interface SGRKaraokeView () <UIScrollViewDelegate>
-- (UIButton *)modeButtonWithTitle:(NSString *)title tag:(NSInteger)tag;
-- (void)modeButtonTapped:(UIButton *)button;
 - (void)updateModeMenu;
+- (void)lyricsLinesChanged:(NSNotification *)note;
 @end
 
 @implementation SGRKaraokeView {
@@ -456,8 +455,7 @@ static double secant(SGSweepKnot *knots, NSUInteger i) {
     BOOL _showing;
     CAGradientLayer *_fade;
     UILabel *_credit;
-    UIStackView *_modeButtons;
-    UIButton *_lyricsButton, *_allButton, *_translationButton, *_pronunciationButton;
+    UIButton *_modeButton;
     NSInteger _displayMode;
     CGFloat _fontSize, _margin, _lineGap, _blurPerLine, _maxBlur;
     BOOL _crediting;   // the switch is read once: the page asks for the source on every frame until it has one
@@ -499,20 +497,29 @@ static double secant(SGSweepKnot *knots, NSUInteger i) {
     _credit.hidden = YES;
     _crediting = SGFlag(SGKeyLyricsCredit, NO);
     [self addSubview:_credit];
-    _lyricsButton = [self modeButtonWithTitle:@"가사" tag:SGKaraokeDisplayLyrics];
-    _allButton = [self modeButtonWithTitle:@"전체" tag:SGKaraokeDisplayAll];
-    _translationButton = [self modeButtonWithTitle:@"번역" tag:SGKaraokeDisplayTranslation];
-    _pronunciationButton = [self modeButtonWithTitle:@"발음" tag:SGKaraokeDisplayPronunciation];
-    _modeButtons = [[UIStackView alloc] initWithArrangedSubviews:@[_lyricsButton, _allButton, _translationButton, _pronunciationButton]];
-    _modeButtons.axis = UILayoutConstraintAxisHorizontal;
-    _modeButtons.alignment = UIStackViewAlignmentFill;
-    _modeButtons.distribution = UIStackViewDistributionFillProportionally;
-    _modeButtons.spacing = 6;
-    [self addSubview:_modeButtons];
+    // Apple Music keeps this as one compact control.  The alternate lyric modes live in the
+    // native UIMenu instead of four permanently visible pills competing with the lyrics.
+    _modeButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    _modeButton.showsMenuAsPrimaryAction = YES;
+    _modeButton.accessibilityLabel = @"가사 표시 방식";
+    UIButtonConfiguration *modeConfiguration = [UIButtonConfiguration plainButtonConfiguration];
+    modeConfiguration.contentInsets = NSDirectionalEdgeInsetsMake(6, 12, 6, 10);
+    modeConfiguration.baseForegroundColor = UIColor.whiteColor;
+    modeConfiguration.background.backgroundColor = [UIColor colorWithWhite:0 alpha:0.42];
+    modeConfiguration.background.cornerRadius = 16;
+    modeConfiguration.image = [UIImage systemImageNamed:@"chevron.down"];
+    modeConfiguration.imagePlacement = NSDirectionalRectEdgeTrailing;
+    modeConfiguration.imagePadding = 5;
+    _modeButton.configuration = modeConfiguration;
+    [self addSubview:_modeButton];
     [self updateModeMenu];
-    [self addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tapped:)]];
+    UITapGestureRecognizer *lyricsTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tapped:)];
+    // Let the menu button receive the same tap instead of the page's seek gesture consuming it.
+    lyricsTap.cancelsTouchesInView = NO;
+    [self addGestureRecognizer:lyricsTap];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(playerTransitionChanged:) name:SGPlayerTransitionNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(playerTransitionChanged:) name:SGPlayerTransitionEndedNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(lyricsLinesChanged:) name:SGKaraokeLinesDidChangeNotification object:nil];
     return self;
 }
 
@@ -530,22 +537,6 @@ static double secant(SGSweepKnot *knots, NSUInteger i) {
     return NO;
 }
 
-- (UIButton *)modeButtonWithTitle:(NSString *)title tag:(NSInteger)tag {
-    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
-    button.tag = tag;
-    button.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
-    [button addTarget:self action:@selector(modeButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
-    return button;
-}
-
-- (void)modeButtonTapped:(UIButton *)button {
-    SGSetInt(SGKeyLyricsDisplayMode, button.tag);
-    _displayMode = button.tag;
-    _builtWidth = 0;
-    [self updateModeMenu];
-    [self setNeedsLayout];
-}
-
 - (void)updateModeMenu {
     BOOL translation = [self hasTranslation], pronunciation = [self hasPronunciation];
     NSInteger current = karaokeDisplayMode();
@@ -556,26 +547,60 @@ static double secant(SGSweepKnot *knots, NSUInteger i) {
         SGSetInt(SGKeyLyricsDisplayMode, current);
         _displayMode = current;
     }
-    NSArray<UIButton *> *buttons = @[_lyricsButton, _allButton, _translationButton, _pronunciationButton];
-    for (UIButton *button in buttons) {
-        BOOL available = button == _lyricsButton || button == _allButton ? (button == _lyricsButton || translation || pronunciation)
-                         : button == _translationButton ? translation : pronunciation;
-        UIButtonConfiguration *configuration = [UIButtonConfiguration plainButtonConfiguration];
-        configuration.contentInsets = NSDirectionalEdgeInsetsMake(6, 12, 6, 12);
-        BOOL selected = current == button.tag;
-        configuration.baseForegroundColor = selected ? UIColor.blackColor : UIColor.whiteColor;
-        configuration.background.backgroundColor = selected ? SGGreen() : [UIColor colorWithWhite:0 alpha:0.42];
-        configuration.background.cornerRadius = 15;
-        configuration.title = button == _lyricsButton ? @"가사" : button == _allButton ? @"전체" : button == _translationButton ? @"번역" : @"발음";
-        button.configuration = configuration;
-        button.hidden = !available;
-    }
-    // Apple Music keeps the main lyrics control visible and reveals the auxiliary controls only
-    // when the source actually supplied them.
-    _modeButtons.hidden = !_showing || !(translation || pronunciation);
+
+    __weak SGRKaraokeView *weakSelf = self;
+    NSMutableArray<UIAction *> *actions = [NSMutableArray array];
+    void (^addAction)(NSInteger, NSString *, BOOL) = ^(NSInteger mode, NSString *title, BOOL available) {
+        if (!available) return;
+        UIMenuElementState state = current == mode ? UIMenuElementStateOn : UIMenuElementStateOff;
+        UIAction *action = [UIAction actionWithTitle:title image:nil identifier:nil handler:^(__kindof UIAction *sender) {
+            SGRKaraokeView *strongSelf = weakSelf;
+            if (!strongSelf) return;
+            SGSetInt(SGKeyLyricsDisplayMode, mode);
+            strongSelf->_displayMode = mode;
+            strongSelf->_builtWidth = 0;
+            [strongSelf updateModeMenu];
+            [strongSelf setNeedsLayout];
+        }];
+        action.state = state;
+        [actions addObject:action];
+    };
+    NSString *allTitle = translation && pronunciation ? @"가사 + 번역 + 발음" :
+        translation ? @"가사 + 번역" : @"가사 + 발음";
+    addAction(SGKaraokeDisplayLyrics, @"가사만", YES);
+    addAction(SGKaraokeDisplayAll, allTitle, translation || pronunciation);
+    addAction(SGKaraokeDisplayTranslation, @"번역", translation);
+    addAction(SGKaraokeDisplayPronunciation, @"발음", pronunciation);
+    _modeButton.menu = [UIMenu menuWithTitle:@"가사 표시" children:actions];
+
+    UIButtonConfiguration *configuration = _modeButton.configuration ?: [UIButtonConfiguration plainButtonConfiguration];
+    configuration.title = @"가사";
+    configuration.baseForegroundColor = UIColor.whiteColor;
+    configuration.image = [UIImage systemImageNamed:@"chevron.down"];
+    configuration.imagePlacement = NSDirectionalRectEdgeTrailing;
+    configuration.imagePadding = 5;
+    _modeButton.configuration = configuration;
+    _modeButton.accessibilityValue = current == SGKaraokeDisplayAll ? allTitle :
+        current == SGKaraokeDisplayTranslation ? @"가사 및 번역" :
+        current == SGKaraokeDisplayPronunciation ? @"가사 및 발음" : @"가사만";
+    // The compact control is shown only when the track actually has an alternate line to choose.
+    _modeButton.hidden = !_showing || !(translation || pronunciation);
+}
+
+- (void)lyricsLinesChanged:(NSNotification *)note {
+    if (![_track isEqual:note.object]) return;
+    NSArray<SGKaraokeLine *> *lines = SGKaraokeLinesForTrack(_track);
+    if (!lines) return;
+    _lines = lines;
+    _builtWidth = 0;
+    [self dropLineViews];
+    [self updateModeMenu];
+    [self setNeedsLayout];
 }
 
 - (void)tapped:(UITapGestureRecognizer *)tap {
+    CGPoint pagePoint = [tap locationInView:self];
+    if (!_modeButton.hidden && CGRectContainsPoint(_modeButton.frame, pagePoint)) return;
     CGPoint point = [tap locationInView:_scroll];
     for (SGRKaraokeLineView *view in _shown.allValues) {
         if (!CGRectContainsPoint(CGRectInset(view.frame, -_margin, -_lineGap / 2), point)) continue;
@@ -676,7 +701,9 @@ static double secant(SGSweepKnot *knots, NSUInteger i) {
     _credit.frame = CGRectMake(_margin, self.bounds.size.height - _credit.bounds.size.height - kCreditBottom,
                                _credit.bounds.size.width, _credit.bounds.size.height);
     CGFloat modeTop = MAX(8, self.safeAreaInsets.top) + 8;
-    _modeButtons.frame = CGRectMake(_margin, modeTop, self.bounds.size.width - 2 * _margin, 32);
+    [_modeButton sizeToFit];
+    CGFloat modeWidth = MIN(_modeButton.bounds.size.width, self.bounds.size.width - 2 * _margin);
+    _modeButton.frame = CGRectMake(self.bounds.size.width - _margin - modeWidth, modeTop, modeWidth, 32);
     NSInteger mode = karaokeDisplayMode();
     if (_lines && mode != _displayMode) {
         _displayMode = mode;
@@ -879,6 +906,7 @@ static double secant(SGSweepKnot *knots, NSUInteger i) {
     }
     if (!_lines && track && (_lines = SGKaraokeLinesForTrack(track))) {
         SGLog(@"karaoke: showing %lu lines of %@", (unsigned long)_lines.count, track);
+        SGKaraokeRequestAlternates(track);
         [self setNeedsLayout];
         [self updateModeMenu];
     }

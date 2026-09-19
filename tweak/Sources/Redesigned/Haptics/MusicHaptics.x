@@ -206,11 +206,21 @@ static BOOL sg_rumbling;
 static double sg_rumbleSentAt, sg_quietSince;
 static float sg_rumbleSent;
 
+// Core Haptics can stop or reset while iOS moves Spotify between the foreground and its
+// lock-screen audio state.  Only the player thread touches the engine; these callbacks merely
+// mark it stale and wake that thread so it can tear down and start a fresh session safely.
+static void requestEngineRestart(void) {
+    atomic_store_explicit(&sg_engineStopped, true, memory_order_relaxed);
+    if (sg_wake) dispatch_semaphore_signal(sg_wake);
+}
+
 typedef struct {
     NSUInteger taps, late, levels;
     double leadSum, leadMin;
 } Stats;
 static Stats sg_stats;
+
+static void stopEngine(void);
 
 static double hostSeconds(uint64_t ticks) {
     return ticks * sg_secondsPerTick;
@@ -236,22 +246,30 @@ static BOOL startEngine(void) {
         sg_engine.playsHapticsOnly = YES;
         sg_engine.autoShutdownEnabled = NO;
         sg_engine.stoppedHandler = ^(CHHapticEngineStoppedReason reason) {
-            atomic_store(&sg_engineStopped, true);
+            requestEngineRestart();
             SGLog(@"music haptics: the engine stopped (reason %ld)", (long)reason);
         };
         sg_engine.resetHandler = ^{
-            atomic_store(&sg_engineStopped, true);
+            requestEngineRestart();
             SGLog(@"music haptics: the engine was reset");
         };
     }
     if (atomic_exchange(&sg_engineStopped, false)) {
-        sg_engineRunning = NO;
-        sg_rumble = nil;
-        sg_rumbling = NO;
+        stopEngine();
+        retryAt = 0;
     }
     if (sg_engineRunning) return YES;
     double now = hostSeconds(mach_absolute_time());
     if (now < retryAt) return NO;
+    // Spotify normally owns an already-active playback session.  Reasserting it here is
+    // important after a lock-screen interruption, when the haptic engine can otherwise start
+    // successfully in the foreground but stay silent until the app is opened again.
+    if (![AVAudioSession.sharedInstance setActive:YES error:&error]) {
+        static int logged;
+        if (logged++ < 4) SGLog(@"music haptics: could not reactivate the audio session: %@", error);
+        retryAt = now + kStartRetryAfter;
+        return NO;
+    }
     if (![sg_engine startAndReturnError:&error]) {
         retryAt = now + kStartRetryAfter;
         static int logged;
@@ -299,7 +317,7 @@ static void playTap(const SGRMusicEvent *event) {
     if (!player || ![player startAtTime:at error:&error]) {
         static int logged;
         if (logged++ < 3) SGLog(@"music haptics: a tap did not play: %@", error);
-        if (error.code == CHHapticErrorCodeEngineNotRunning || error.code == CHHapticErrorCodeServerInterrupted) atomic_store(&sg_engineStopped, true);
+        if (error.code == CHHapticErrorCodeEngineNotRunning || error.code == CHHapticErrorCodeServerInterrupted) requestEngineRestart();
         return;
     }
     sg_stats.taps++;
@@ -402,7 +420,10 @@ static void *playerLoop(void *unused) {
             }
             BOOL any = NO;
             unsigned head = atomic_load(&sg_head), tail = atomic_load(&sg_tail);
-            if (tail != head && startEngine()) {
+            // A stopped/reset engine must be rearmed even if the render callback has not queued a
+            // new event yet.  This is what makes a screen-lock transition recover without opening
+            // Spotify again.
+            if ((tail != head || atomic_load_explicit(&sg_engineStopped, memory_order_relaxed)) && startEngine()) {
                 for (; tail != head; tail++) {
                     SGRMusicEvent event = sg_ring[tail & (kRingSize - 1)];
                     if (event.kind == SGRMusicEventTap) playTap(&event);
@@ -479,6 +500,36 @@ void SGRSetMusicHapticsEnabled(BOOL on) {
     updateListening();
     NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
     [center addObserverForName:AVAudioSessionRouteChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
-        if (atomic_load(&sg_listening)) readLatency();
+        if (atomic_load(&sg_listening)) {
+            readLatency();
+            requestEngineRestart();
+        }
+    }];
+    [center addObserverForName:AVAudioSessionInterruptionNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
+        requestEngineRestart();
+        NSNumber *type = note.userInfo[AVAudioSessionInterruptionTypeKey];
+        if (type.integerValue == AVAudioSessionInterruptionTypeEnded) {
+            // Give Spotify's playback session a moment to become active again before the retry.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ requestEngineRestart(); });
+        }
+    }];
+    [center addObserverForName:AVAudioSessionMediaServicesWereResetNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
+        requestEngineRestart();
+    }];
+    // These notifications are delivered for the lock-screen transition as well as ordinary app
+    // switching.  Spotify keeps its audio render loop alive in the background, so rearming the
+    // haptic engine here lets the next render event continue driving it with the screen off.
+    [center addObserverForName:UIApplicationWillResignActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
+        requestEngineRestart();
+    }];
+    [center addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
+        requestEngineRestart();
+    }];
+    [center addObserverForName:UIApplicationWillEnterForegroundNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
+        requestEngineRestart();
+    }];
+    [center addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
+        requestEngineRestart();
     }];
 }
