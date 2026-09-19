@@ -59,9 +59,12 @@ static NSInteger msOfClock(NSString *clock) {
     NSInteger _lineStart, _lineEnd;
     NSString *_voice;
     NSMutableString *_plain;                     // every character of the line, for a line-timed <p>
+    NSMutableString *_translation;               // optional x-translation/ruby text kept off the sung line
+    NSMutableString *_pronunciation;             // optional x-transliteration/x-pronunciation text
     NSMutableString *_word;                      // the characters of the span being read
     NSInteger _wordStart, _wordEnd;
-    NSUInteger _spanDepth, _bgDepth, _wordDepth;
+    NSUInteger _spanDepth, _bgDepth, _wordDepth, _translationDepth, _pronunciationDepth;
+    BOOL _translationAllowed;
 }
 
 - (instancetype)init {
@@ -83,7 +86,11 @@ static NSInteger msOfClock(NSString *clock) {
         _backing = nil;
         _word = nil;
         _spanDepth = _bgDepth = _wordDepth = 0;
+        _translationDepth = _pronunciationDepth = 0;
+        _translationAllowed = YES;
         _plain = [NSMutableString string];
+        _translation = [NSMutableString string];
+        _pronunciation = [NSMutableString string];
         _lineStart = msOfClock(attributes[@"begin"]);
         _lineEnd = msOfClock(attributes[@"end"]);
         _voice = attributes[@"ttm:agent"] ?: attributes[@"agent"];
@@ -98,9 +105,27 @@ static NSInteger msOfClock(NSString *clock) {
         _bgDepth = _spanDepth;
         return;
     }
+    NSString *lowerRole = role.lowercaseString;
+    BOOL translation = [lowerRole containsString:@"translation"] || [lowerRole containsString:@"translated"];
+    BOOL pronunciation = [lowerRole containsString:@"pronunciation"] || [lowerRole containsString:@"romanization"]
+                       || [lowerRole containsString:@"romanisation"] || [lowerRole containsString:@"transliteration"];
+    if (translation || pronunciation) {
+        // A selected language is only applied when the source labels its span. Unlabelled text is
+        // kept as the useful fallback, which is how older BiniLyrics documents are written.
+        NSArray<NSString *> *languageCodes = @[@"auto", @"ko", @"en", @"ja", @"zh"];
+        NSInteger languageIndex = [NSUserDefaults.standardUserDefaults integerForKey:SGKeyLyricsTranslationLanguage];
+        NSString *want = languageIndex >= 0 && languageIndex < (NSInteger)languageCodes.count
+                       ? languageCodes[(NSUInteger)languageIndex] : @"auto";
+        NSString *language = attributes[@"xml:lang"] ?: attributes[@"lang"];
+        _translationAllowed = !want.length || [want isEqualToString:@"auto"] || !language.length
+                            || [language.lowercaseString hasPrefix:want.lowercaseString];
+        if (translation) _translationDepth = _spanDepth;
+        if (pronunciation) _pronunciationDepth = _spanDepth;
+        return;
+    }
     // A span nested inside one that is already being read is ruby or a translation: its characters
     // belong to the word around it rather than making a word of their own.
-    if (_word) return;
+    if (_word || _translationDepth || _pronunciationDepth) return;
     NSInteger start = msOfClock(attributes[@"begin"]), end = msOfClock(attributes[@"end"]);
     if (start < 0) return;
     _word = [NSMutableString string];
@@ -111,6 +136,14 @@ static NSInteger msOfClock(NSString *clock) {
 
 - (void)parser:(NSXMLParser *)parser foundCharacters:(NSString *)characters {
     if (!_stack.count) return;
+    if (_translationDepth) {
+        if (_translationAllowed) [_translation appendString:characters];
+        return;
+    }
+    if (_pronunciationDepth) {
+        if (_translationAllowed) [_pronunciation appendString:characters];
+        return;
+    }
     [_plain appendString:characters];
     if (_word) {
         [_word appendString:characters];
@@ -129,6 +162,8 @@ static NSInteger msOfClock(NSString *clock) {
         return;
     }
     if (![element isEqualToString:@"span"] || !_stack.count) return;
+    if (_translationDepth && _spanDepth == _translationDepth) _translationDepth = 0;
+    if (_pronunciationDepth && _spanDepth == _pronunciationDepth) _pronunciationDepth = 0;
     if (_word && _spanDepth == _wordDepth) {
         NSString *text = [_word stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
         SGTTMLContainer *into = self.top;
@@ -175,6 +210,10 @@ static NSInteger msOfClock(NSString *clock) {
     if (_lineEnd > line.start) line.end = _lineEnd;
     line.voice = _voice;
     line.backing = [self lineFrom:_backing.words];
+    NSString *translation = [_translation stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSString *pronunciation = [_pronunciation stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (translation.length) line.translationText = translation;
+    if (pronunciation.length) line.pronunciationText = pronunciation;
     [_lines addObject:line];
 }
 
@@ -192,6 +231,20 @@ NSArray<SGKaraokeLine *> *SGTTMLLines(NSString *xml) {
     parser.shouldProcessNamespaces = NO;
     [parser parse];
     if (!reader.lines.count) return nil;
-    SGKaraokeAlignVoices(reader.lines);
-    return reader.lines;
+    NSMutableArray<SGKaraokeLine *> *withBreaks = [NSMutableArray array];
+    SGKaraokeLine *last = nil;
+    for (SGKaraokeLine *line in reader.lines) {
+        if (last && line.start - last.end >= 3000) {
+            SGKaraokeLine *breakLine = [SGKaraokeLine new];
+            breakLine.breakLine = YES;
+            breakLine.words = @[];
+            breakLine.start = last.end;
+            breakLine.end = line.start;
+            [withBreaks addObject:breakLine];
+        }
+        [withBreaks addObject:line];
+        last = line;
+    }
+    SGKaraokeAlignVoices(withBreaks);
+    return withBreaks;
 }

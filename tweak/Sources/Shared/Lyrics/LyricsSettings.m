@@ -16,6 +16,14 @@ SGModSection *SGLyricsSourcesSection(BOOL namingSource) {
     };
     NSMutableArray<SGModRow *> *rows = [NSMutableArray arrayWithObjects:sources,
         SGOptionRow(@"Lyrics for every track", @"Offers the lyrics card on tracks Spotify has no lyrics for; needs a source above", SGKeyLyricsAllTracks), nil];
+    [rows addObject:SGChoiceRow(@"Translation language", @"Uses a matching translation when a lyrics source provides more than one", SGKeyLyricsTranslationLanguage,
+                                @[@"Automatic", @"Korean", @"English", @"Japanese", @"Chinese"], 0)];
+    if (namingSource) {
+        [rows addObject:SGChoiceRow(@"Lyrics display", @"Choose lyrics, translation and pronunciation/romanization rows", SGKeyLyricsDisplayMode,
+                                    @[@"Lyrics only", @"Lyrics + translation + pronunciation", @"Translation only", @"Pronunciation only"], 0)];
+        [rows addObject:SGChoiceRow(@"Alternate row order", @"Order the translation and pronunciation rows", SGKeyLyricsDisplayOrder,
+                                    @[@"Pronunciation, then translation", @"Translation, then pronunciation"], 0)];
+    }
     if (namingSource) [rows addObject:SGOptionRow(@"Name the source", @"Reads out which source the lines on the full screen page came from", SGKeyLyricsCredit)];
     return SGNotedSection(@"Where lyrics come from", rows, @"With no source on, Spotify's own lyrics are left alone.");
 }

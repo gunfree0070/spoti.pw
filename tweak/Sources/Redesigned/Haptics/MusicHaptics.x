@@ -13,9 +13,10 @@
 // continuous event whose intensity follows the level.
 //
 // The rebinding and the notify are in place while Redesigned UI is on, so the switch works at once;
-// with the switch off the notify returns straight away. Nothing listens while Spotify is not the active
-// app, since iOS plays no haptics for an app in the background. Sound that is not Spotify's own
-// output (Connect, AirPlay to another device, video) never passes the unit, and plays no haptics.
+// with the switch off the notify returns straight away. Listening is tied to Spotify's output rather
+// than UIApplication active state, so playback can continue to drive haptics after the screen locks.
+// Sound that is not Spotify's own output (Connect, AirPlay to another device, video) never passes the
+// unit, and plays no haptics.
 //
 // Threading: the notify runs on the render thread and only touches atomics, the analyzer and the
 // ring; the Core Haptics objects belong to the player thread; the switch and the app's state are set
@@ -35,8 +36,9 @@
 static const double kHapticLead = 0.012;
 // A tap this late is left out rather than played off the beat.
 static const double kLatestTap = 0.05;
-// Taps are this strong at most, and the rumble this strong at its level's most.
-static const float kTapGain = 1, kRumbleGain = 1;
+// Feed Core Haptics above its normalized range so every analyzer event reaches the strongest value
+// Core Haptics accepts after MIN(1, ...). Quiet events still remain quiet through their source level.
+static const float kTapGain = 2.0f, kRumbleGain = 2.0f;
 // The rumble starts over this level and stops once it has stayed under the other this long.
 static const float kRumbleStart = 0.05f, kRumbleStop = 0.02f;
 static const double kRumbleStopAfter = 0.3;
@@ -54,7 +56,7 @@ enum { kRingSize = 1024, kMonoFrames = 4096 };
 
 #pragma mark - shared between the threads
 
-static atomic_bool sg_enabled, sg_active, sg_listening;
+static atomic_bool sg_enabled, sg_listening;
 static atomic_uint sg_generation;
 static atomic_uint_fast64_t sg_latencyBits;
 static atomic_uint sg_formatFlags, sg_lastFrames;
@@ -435,7 +437,10 @@ static void readLatency(void) {
 }
 
 static void updateListening(void) {
-    BOOL listening = atomic_load(&sg_enabled) && atomic_load(&sg_active);
+    // The RemoteIO render notify is only installed on Spotify's own output unit. Do not gate it on
+    // UIApplication active state: Spotify keeps audio alive under the lock screen and the haptic
+    // engine can follow that render stream too.
+    BOOL listening = atomic_load(&sg_enabled);
     if (atomic_exchange(&sg_listening, listening) == listening) return;
     if (listening) {
         atomic_fetch_add(&sg_generation, 1);
@@ -470,15 +475,9 @@ void SGRSetMusicHapticsEnabled(BOOL on) {
     }
     sg_wake = dispatch_semaphore_create(0);
     atomic_store(&sg_enabled, SGFlag(SGRKeyMusicHaptics, NO));
+    atomic_store(&sg_listening, false);
+    updateListening();
     NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
-    [center addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
-        atomic_store(&sg_active, true);
-        updateListening();
-    }];
-    [center addObserverForName:UIApplicationWillResignActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
-        atomic_store(&sg_active, false);
-        updateListening();
-    }];
     [center addObserverForName:AVAudioSessionRouteChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
         if (atomic_load(&sg_listening)) readLatency();
     }];

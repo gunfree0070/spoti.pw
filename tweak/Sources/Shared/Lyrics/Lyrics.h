@@ -30,6 +30,9 @@ typedef NS_ENUM(NSUInteger, SGKaraokeAlign) {
 @interface SGKaraokeLine : NSObject
 @property (nonatomic, copy) NSArray<SGKaraokeWord *> *words;
 @property (nonatomic) NSInteger start, end;
+// A timed instrumental/break section. It has no words, but remains in the timeline so the
+// redesigned view can show its animated dots for the whole pause instead of holding the last line.
+@property (nonatomic) BOOL breakLine;
 // The voice singing the line, named as the source names it ("v1", "v2"), nil when it names none.
 // SGKaraokeAlignVoices turns these into alignments; nothing else reads it.
 @property (nonatomic, copy) NSString *voice;
@@ -37,6 +40,10 @@ typedef NS_ENUM(NSUInteger, SGKaraokeAlign) {
 // The (oh, aye) sung under the line, smaller and dimmer, nil for nearly every line. Its words are
 // timed like any other and it is lit by the same sweep, a beat behind the line it hangs off.
 @property (nonatomic, strong) SGKaraokeLine *backing;
+// Optional parallel text carried by Apple-style TTML sources. It is kept separate from the sung
+// words so a translation or a romanization never contaminates the karaoke sweep.
+@property (nonatomic, copy) NSString *translationText;
+@property (nonatomic, copy) NSString *pronunciationText;
 @end
 
 // The line as one string, a space between the words that are not joined.

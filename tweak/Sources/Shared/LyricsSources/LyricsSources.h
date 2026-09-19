@@ -15,6 +15,13 @@
 #define SGKeyLyricsAllTracks @"spotifyglass.lyricsAllTracks"
 // Names the source the shown lines came from, on the full screen page.
 #define SGKeyLyricsCredit @"spotifyglass.lyricsCredit"
+// Language used when a source carries more than one translated TTML span. 0 is automatic.
+#define SGKeyLyricsTranslationLanguage @"spotifyglass.lyricsTranslationLanguage"
+// Default alternate-text presentation in the redesigned lyrics view: lyrics only, all available
+// text, translation only, or pronunciation/romanization only.
+#define SGKeyLyricsDisplayMode @"spotifyglass.lyricsDisplayMode"
+// The order of the smaller parallel rows when both are shown.
+#define SGKeyLyricsDisplayOrder @"spotifyglass.lyricsDisplayOrder"
 
 // What a source answers with, and what the chain merges several of into one.
 @interface SGLyricsResult : NSObject

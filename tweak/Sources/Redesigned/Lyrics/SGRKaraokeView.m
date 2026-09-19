@@ -13,6 +13,7 @@ static const CGFloat kEdgeFade = 0.1;  // the lines fade out over this share at 
 static const CGFloat kBlurPerLine = 1.4, kMaxBlur = 6;
 // The (oh, aye) hanging under a line: smaller, a little dimmer, and just clear of it.
 static const CGFloat kBackingScale = 0.62, kBackingAlpha = 0.8, kBackingGap = 4;
+static const CGFloat kAlternativeScale = 0.55, kAlternativeAlpha = 0.72, kAlternativeGap = 5;
 // The line naming the source, under the lyrics and outside the fade so it does not dim with them.
 static const CGFloat kCreditSize = 12, kCreditAlpha = 0.4, kCreditBottom = 10;
 static const NSTimeInterval kBrowseHold = 3;   // after scrolling by hand, how long until it follows the song again
@@ -25,6 +26,43 @@ static const double kClockSnapMs = 250, kClockPull = 0.08;
 static const CGFloat kSightBehind = 0.5, kSightAhead = 0.5, kSightSlack = 0.25;
 static const NSTimeInterval kTransitionSlack = 0.05;   // after the player's animation, before the link is back
 static NSString *const kBlurPath = @"filters.gaussianBlur.inputRadius";
+
+typedef NS_ENUM(NSInteger, SGKaraokeDisplayMode) {
+    SGKaraokeDisplayLyrics = 0,
+    SGKaraokeDisplayAll,
+    SGKaraokeDisplayTranslation,
+    SGKaraokeDisplayPronunciation,
+};
+
+static NSInteger karaokeDisplayMode(void) {
+    NSInteger mode = SGInt(SGKeyLyricsDisplayMode, SGKaraokeDisplayLyrics);
+    return mode >= SGKaraokeDisplayLyrics && mode <= SGKaraokeDisplayPronunciation ? mode : SGKaraokeDisplayLyrics;
+}
+
+static UIFont *alternativeFont(UIFont *font) {
+    return [UIFont systemFontOfSize:MAX(12, round(font.pointSize * kAlternativeScale)) weight:UIFontWeightSemibold];
+}
+
+static NSArray<NSString *> *alternativeKeys(SGKaraokeLine *line, NSInteger mode) {
+    BOOL hasTranslation = line.translationText.length > 0, hasPronunciation = line.pronunciationText.length > 0;
+    if (mode == SGKaraokeDisplayTranslation) return hasTranslation ? @[@"translation"] : @[];
+    if (mode == SGKaraokeDisplayPronunciation) return hasPronunciation ? @[@"pronunciation"] : @[];
+    if (mode != SGKaraokeDisplayAll || (!hasTranslation && !hasPronunciation)) return @[];
+    return SGInt(SGKeyLyricsDisplayOrder, 0) == 1
+        ? @[@"translation", @"pronunciation"] : @[@"pronunciation", @"translation"];
+}
+
+static NSString *alternativeText(SGKaraokeLine *line, NSString *key) {
+    return [key isEqualToString:@"translation"] ? line.translationText : line.pronunciationText;
+}
+
+static CGFloat alternativeHeight(NSString *text, CGFloat width, UIFont *font) {
+    if (!text.length || width <= 0) return 0;
+    CGRect rect = [text boundingRectWithSize:CGSizeMake(width, CGFLOAT_MAX)
+                                     options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                                  attributes:@{NSFontAttributeName: font} context:nil];
+    return MAX(ceil(font.lineHeight), ceil(rect.size.height));
+}
 
 @interface CAFilter : NSObject
 + (instancetype)filterWithType:(NSString *)type;
@@ -129,16 +167,26 @@ typedef struct {
     SGSweepKnot *_knots;
     NSUInteger _knotCount;
     SGRKaraokeLineView *_backing;
+    UILabel *_breakDots;
+    UILabel *_translationLabel, *_pronunciationLabel;
+    NSInteger _displayMode;
 }
 
 - (instancetype)initWithLine:(SGKaraokeLine *)line width:(CGFloat)width font:(UIFont *)font backing:(BOOL)backing blurred:(BOOL)blurred {
     self = [super initWithFrame:CGRectZero];
     if (!self) return nil;
     _line = line;
+    _displayMode = karaokeDisplayMode();
     CGFloat space = ceil([@" " sizeWithAttributes:@{NSFontAttributeName: font}].width);
     CGFloat row = ceil(font.lineHeight) - kRowTighten, x = 0, y = 0, offset = 0;
     NSMutableArray<SGRKaraokeWordView *> *words = [NSMutableArray array];
     NSMutableArray<NSMutableArray<SGRKaraokeWordView *> *> *rows = [NSMutableArray arrayWithObject:[NSMutableArray array]];
+    if (line.breakLine) {
+        _breakDots = wordLabel(@"•••", font, [UIColor colorWithWhite:1 alpha:kDimAlpha], CGRectZero);
+        _breakDots.textAlignment = line.align == SGKaraokeAlignTrailing ? NSTextAlignmentRight : NSTextAlignmentLeft;
+        _breakDots.frame = CGRectMake(0, 0, width, ceil(font.lineHeight));
+        [self addSubview:_breakDots];
+    }
     for (SGKaraokeWord *word in line.words) {
         SGRKaraokeWordView *view = [[SGRKaraokeWordView alloc] initWithWord:word font:font];
         CGSize size = view.bounds.size;
@@ -180,6 +228,24 @@ typedef struct {
         [self addSubview:_backing];
         height = CGRectGetMaxY(_backing.frame);
     }
+    NSArray<NSString *> *keys = alternativeKeys(line, _displayMode);
+    if (keys.count && !backing) {
+        UIFont *smaller = alternativeFont(font);
+        CGFloat y = height + kAlternativeGap;
+        for (NSString *key in keys) {
+            UILabel *label = wordLabel(alternativeText(line, key), smaller,
+                                        [UIColor colorWithWhite:1 alpha:kAlternativeAlpha], CGRectZero);
+            label.numberOfLines = 0;
+            label.textAlignment = line.align == SGKaraokeAlignTrailing ? NSTextAlignmentRight : NSTextAlignmentLeft;
+            CGFloat rowHeight = alternativeHeight(label.text, width, smaller);
+            label.frame = CGRectMake(0, y, width, rowHeight);
+            [self addSubview:label];
+            if ([key isEqualToString:@"translation"]) _translationLabel = label;
+            else _pronunciationLabel = label;
+            y += rowHeight + kAlternativeGap;
+        }
+        height = y - kAlternativeGap;
+    }
     self.frame = CGRectMake(0, 0, width, height);
     [self buildSweep];
 
@@ -210,6 +276,12 @@ static CGFloat lineHeight(SGKaraokeLine *line, CGFloat width, UIFont *font, BOOL
     if (line.backing.words.count && !backing) {
         UIFont *smaller = [UIFont systemFontOfSize:round(font.pointSize * kBackingScale) weight:UIFontWeightBold];
         height += kBackingGap + lineHeight(line.backing, width, smaller, YES);
+    }
+    if (!backing) {
+        UIFont *smaller = alternativeFont(font);
+        for (NSString *key in alternativeKeys(line, karaokeDisplayMode())) {
+            height += kAlternativeGap + alternativeHeight(alternativeText(line, key), width, smaller);
+        }
     }
     return height;
 }
@@ -300,6 +372,19 @@ static double secant(SGSweepKnot *knots, NSUInteger i) {
     _active = active;
     _backing.active = active;
     NSUInteger generation = ++_generation;
+    if (_line.breakLine) {
+        [_breakDots.layer removeAllAnimations];
+        _breakDots.alpha = active ? 1 : kDimAlpha;
+        if (active) {
+            CAKeyframeAnimation *pulse = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
+            pulse.values = @[@0.35, @1, @0.35];
+            pulse.keyTimes = @[@0, @0.5, @1];
+            pulse.duration = MIN(1.2, MAX(0.45, (_line.end - _line.start) / 1000.0));
+            pulse.repeatCount = HUGE_VALF;
+            [_breakDots.layer addAnimation:pulse forKey:@"break-pulse"];
+        }
+        return;
+    }
     if (active) {
         for (SGRKaraokeWordView *word in _words) {
             [word.layer removeAllAnimations];
@@ -331,6 +416,7 @@ static double secant(SGSweepKnot *knots, NSUInteger i) {
 }
 
 - (void)showTime:(double)ms {
+    if (_line.breakLine) return;
     CGFloat cursor = [self cursorAt:ms];
     for (SGRKaraokeWordView *word in _words) {
         [word fillTo:cursor];
@@ -361,10 +447,13 @@ static double secant(SGSweepKnot *knots, NSUInteger i) {
     NSUInteger _build;   // counts the songs and widths measured, so a measurement that is late is dropped
     UIFont *_font;
     NSInteger _active;
+    NSIndexSet *_activeLines;
     CGFloat _builtWidth;
     BOOL _showing;
     CAGradientLayer *_fade;
     UILabel *_credit;
+    UIButton *_modeButton;
+    NSInteger _displayMode;
     CGFloat _fontSize, _margin, _lineGap, _blurPerLine, _maxBlur;
     BOOL _crediting;   // the switch is read once: the page asks for the source on every frame until it has one
     double _clock;
@@ -377,6 +466,8 @@ static double secant(SGSweepKnot *knots, NSUInteger i) {
     if (!self) return nil;
     self.hidden = YES;
     _active = -1;
+    _activeLines = [NSIndexSet indexSet];
+    _displayMode = karaokeDisplayMode();
     _fontSize = kFontSize;
     _margin = kMargin;
     _lineGap = kLineGap;
@@ -403,6 +494,15 @@ static double secant(SGSweepKnot *knots, NSUInteger i) {
     _credit.hidden = YES;
     _crediting = SGFlag(SGKeyLyricsCredit, NO);
     [self addSubview:_credit];
+    _modeButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    _modeButton.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+    _modeButton.tintColor = UIColor.whiteColor;
+    _modeButton.backgroundColor = [UIColor colorWithWhite:0 alpha:0.42];
+    _modeButton.layer.cornerRadius = 15;
+    _modeButton.contentEdgeInsets = UIEdgeInsetsMake(6, 12, 6, 12);
+    _modeButton.showsMenuAsPrimaryAction = YES;
+    [self addSubview:_modeButton];
+    [self updateModeMenu];
     [self addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tapped:)]];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(playerTransitionChanged:) name:SGPlayerTransitionNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(playerTransitionChanged:) name:SGPlayerTransitionEndedNotification object:nil];
@@ -411,6 +511,47 @@ static double secant(SGSweepKnot *knots, NSUInteger i) {
 
 - (void)dealloc {
     [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+- (BOOL)hasTranslation {
+    for (SGKaraokeLine *line in _lines) if (line.translationText.length) return YES;
+    return NO;
+}
+
+- (BOOL)hasPronunciation {
+    for (SGKaraokeLine *line in _lines) if (line.pronunciationText.length) return YES;
+    return NO;
+}
+
+- (void)updateModeMenu {
+    BOOL translation = [self hasTranslation], pronunciation = [self hasPronunciation];
+    NSInteger current = karaokeDisplayMode();
+    NSMutableArray<UIAction *> *actions = [NSMutableArray array];
+    __weak SGRKaraokeView *weakSelf = self;
+    void (^add)(NSInteger, NSString *, BOOL) = ^(NSInteger mode, NSString *title, BOOL available) {
+        if (!available) return;
+        UIAction *action = [UIAction actionWithTitle:title image:nil identifier:nil handler:^(__kindof UIAction *item) {
+            SGRKaraokeView *view = weakSelf;
+            if (!view) return;
+            SGSetInt(SGKeyLyricsDisplayMode, mode);
+            view->_displayMode = mode;
+            view->_builtWidth = 0;
+            [view updateModeMenu];
+            [view setNeedsLayout];
+        }];
+        action.state = current == mode ? UIMenuElementStateOn : UIMenuElementStateOff;
+        [actions addObject:action];
+    };
+    add(SGKaraokeDisplayLyrics, @"가사", YES);
+    add(SGKaraokeDisplayAll, @"가사 + 번역 + 발음", translation || pronunciation);
+    add(SGKaraokeDisplayTranslation, @"번역", translation);
+    add(SGKaraokeDisplayPronunciation, @"발음", pronunciation);
+    _modeButton.menu = [UIMenu menuWithTitle:@"가사 표시" children:actions];
+    NSString *title = current == SGKaraokeDisplayAll ? @"가사 + 번역 + 발음"
+                   : current == SGKaraokeDisplayTranslation ? @"번역"
+                   : current == SGKaraokeDisplayPronunciation ? @"발음" : @"가사";
+    [_modeButton setTitle:title forState:UIControlStateNormal];
+    _modeButton.hidden = !_showing || !(translation || pronunciation);
 }
 
 - (void)tapped:(UITapGestureRecognizer *)tap {
@@ -513,6 +654,16 @@ static double secant(SGSweepKnot *knots, NSUInteger i) {
     [_credit sizeToFit];
     _credit.frame = CGRectMake(_margin, self.bounds.size.height - _credit.bounds.size.height - kCreditBottom,
                                _credit.bounds.size.width, _credit.bounds.size.height);
+    [_modeButton sizeToFit];
+    _modeButton.frame = CGRectMake(self.bounds.size.width - _modeButton.bounds.size.width - _margin,
+                                   MAX(8, self.safeAreaInsets.top) + 8,
+                                   _modeButton.bounds.size.width, _modeButton.bounds.size.height);
+    NSInteger mode = karaokeDisplayMode();
+    if (_lines && mode != _displayMode) {
+        _displayMode = mode;
+        _builtWidth = 0;
+        [self rebuild];
+    }
     if (_lines && self.bounds.size.width != _builtWidth) [self rebuild];
 }
 
@@ -529,6 +680,7 @@ static double secant(SGSweepKnot *knots, NSUInteger i) {
 - (void)rebuild {
     [self dropLineViews];
     _active = -1;
+    _activeLines = [NSIndexSet indexSet];
     _browsing = NO;
     _scroll.contentOffset = CGPointZero;
     _builtWidth = self.bounds.size.width;
@@ -582,7 +734,7 @@ static double secant(SGSweepKnot *knots, NSUInteger i) {
     for (NSNumber *key in _shown) {
         NSInteger index = key.integerValue;
         CGFloat top = [self topOfLine:index], bottom = top + _shown[key].bounds.size.height;
-        if (index != _active && (bottom < from - slack || top > to + slack)) [gone addObject:key];
+        if (![_activeLines containsIndex:index] && (bottom < from - slack || top > to + slack)) [gone addObject:key];
     }
     for (NSNumber *key in gone) {
         [_shown[key] removeFromSuperview];
@@ -618,13 +770,14 @@ static double secant(SGSweepKnot *knots, NSUInteger i) {
 // toward its own text, and it dims and blurs with its distance from the sung line.
 - (void)placeLine:(SGRKaraokeLineView *)view at:(NSInteger)index animated:(BOOL)animated {
     CGFloat height = self.bounds.size.height;
-    NSInteger distance = index - _active;
+    BOOL active = [_activeLines containsIndex:index];
+    NSInteger distance = _active >= 0 ? index - _active : index;
     CGRect frame = CGRectMake(_margin, [self topOfLine:index], view.bounds.size.width, view.bounds.size.height);
     BOOL trailing = view.line.align == SGKaraokeAlignTrailing;
     CGPoint center = CGPointMake(trailing ? CGRectGetMaxX(frame) : _margin, CGRectGetMidY(frame));
-    CGFloat scale = distance == 0 ? 1 : kDimScale;
+    CGFloat scale = active ? 1 : kDimScale;
     CGAffineTransform transform = CGAffineTransformMakeScale(scale, scale);
-    view.blur = distance == 0 || _browsing ? 0 : MIN(_maxBlur, labs(distance) * _blurPerLine);
+    view.blur = active || _browsing ? 0 : MIN(_maxBlur, labs(distance) * _blurPerLine);
     BOOL near = CGRectIntersectsRect(CGRectInset(self.bounds, 0, -height / 2), frame)
              || CGRectIntersectsRect(CGRectInset(self.bounds, 0, -height / 2), view.frame);
     if (!animated || !near) {
@@ -672,6 +825,7 @@ static double secant(SGSweepKnot *knots, NSUInteger i) {
     _showing = showing;
     self.hidden = !showing;
     _credit.hidden = !showing || !_credit.text.length;
+    [self updateModeMenu];
     for (UIView *sibling in self.superview.subviews) {
         if (sibling != self) sibling.alpha = showing ? 0 : 1;
     }
@@ -702,10 +856,12 @@ static double secant(SGSweepKnot *knots, NSUInteger i) {
         _builtWidth = 0;
         [self creditTo:nil];
         [self dropLineViews];
+        [self updateModeMenu];
     }
     if (!_lines && track && (_lines = SGKaraokeLinesForTrack(track))) {
         SGLog(@"karaoke: showing %lu lines of %@", (unsigned long)_lines.count, track);
         [self setNeedsLayout];
+        [self updateModeMenu];
     }
     [self setShowing:_tops != nil];
     // The source is settled a moment after the lines are, so it is asked for until it answers.
@@ -714,18 +870,35 @@ static double secant(SGSweepKnot *knots, NSUInteger i) {
     [self alignFade];
 
     double now = [self clockMs];
-    NSInteger active = -1;
-    for (NSUInteger i = 0; i < _lines.count && _lines[i].start <= now; i++) active = i;
-    if (active != _active) {
-        if (_active >= 0) _shown[@(_active)].active = NO;
-        if (active >= 0) [self viewForLine:active].active = YES;
-        BOOL jump = labs(active - _active) > 2;   // a seek, not the song moving on
+    NSMutableIndexSet *activeSet = [NSMutableIndexSet indexSet];
+    NSInteger latestStarted = -1;
+    for (NSUInteger i = 0; i < _lines.count && _lines[i].start <= now; i++) {
+        latestStarted = (NSInteger)i;
+        SGKaraokeLine *line = _lines[i];
+        if (line.end > line.start && now < line.end) [activeSet addIndex:i];
+    }
+    // Estimated lines can end a little before a player's corrected clock reaches the next line;
+    // retain the old single-line behaviour as a fallback, while preserving every genuine overlap.
+    if (!activeSet.count && latestStarted >= 0) [activeSet addIndex:(NSUInteger)latestStarted];
+    NSInteger active = activeSet.count ? (NSInteger)activeSet.firstIndex : -1;
+    if (active != _active || ![_activeLines isEqual:activeSet]) {
+        for (NSNumber *key in _shown) {
+            NSInteger index = key.integerValue;
+            _shown[key].active = [activeSet containsIndex:(NSUInteger)index];
+        }
+        for (NSUInteger i = activeSet.firstIndex; i != NSNotFound; i = [activeSet indexGreaterThanIndex:i]) {
+            [self viewForLine:(NSInteger)i].active = YES;
+        }
+        BOOL jump = _active >= 0 && active >= 0 && labs(active - _active) > 2;   // a seek, not the song moving on
+        _activeLines = [activeSet copy];
         _active = active;
         [self placeLinesAnimated:!jump];
     } else {
         [self showLinesInSight];   // the page may be scrolling by hand, or springing back
     }
-    if (active >= 0) [_shown[@(active)] showTime:now];
+    for (NSUInteger i = activeSet.firstIndex; i != NSNotFound; i = [activeSet indexGreaterThanIndex:i]) {
+        [_shown[@((NSInteger)i)] showTime:now];
+    }
 }
 
 @end

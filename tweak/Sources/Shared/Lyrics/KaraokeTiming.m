@@ -21,6 +21,7 @@ static const NSUInteger kSyllableLetters = 3;
 #pragma mark - the model
 
 NSString *SGKaraokeLineText(SGKaraokeLine *line) {
+    if (line.breakLine) return @"♪";
     NSMutableString *text = [NSMutableString string];
     for (SGKaraokeWord *word in line.words) {
         if (text.length && !word.joined) [text appendString:@" "];
@@ -157,9 +158,20 @@ static SGKaraokeLine *timedLine(NSString *text, NSInteger start, NSInteger gap) 
 NSArray<SGKaraokeLine *> *SGKaraokeEstimatedLines(NSArray<NSNumber *> *starts, NSArray<NSString *> *texts) {
     NSMutableArray<SGKaraokeLine *> *lines = [NSMutableArray array];
     for (NSUInteger i = 0; i < texts.count; i++) {
-        if (isBreak(texts[i])) continue;
+        if (i >= starts.count) break;
         NSInteger start = starts[i].integerValue;
         NSInteger gap = i + 1 < starts.count ? starts[i + 1].integerValue - start : 0;
+        if (isBreak(texts[i])) {
+            // Keep the pause in the same timed stream. The final break has no next line to bound it,
+            // so three seconds is the same fallback used by the source merger for a long gap.
+            SGKaraokeLine *breakLine = [SGKaraokeLine new];
+            breakLine.breakLine = YES;
+            breakLine.words = @[];
+            breakLine.start = start;
+            breakLine.end = start + (gap > 0 ? gap : 3000);
+            [lines addObject:breakLine];
+            continue;
+        }
         [lines addObject:timedLine(texts[i], start, MAX(gap, 0))];
     }
     return lines.count ? lines : nil;
