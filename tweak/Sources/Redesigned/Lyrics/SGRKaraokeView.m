@@ -496,10 +496,12 @@ static double secant(SGSweepKnot *knots, NSUInteger i) {
     [self addSubview:_credit];
     _modeButton = [UIButton buttonWithType:UIButtonTypeSystem];
     _modeButton.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
-    _modeButton.tintColor = UIColor.whiteColor;
-    _modeButton.backgroundColor = [UIColor colorWithWhite:0 alpha:0.42];
-    _modeButton.layer.cornerRadius = 15;
-    _modeButton.contentEdgeInsets = UIEdgeInsetsMake(6, 12, 6, 12);
+    UIButtonConfiguration *modeConfiguration = [UIButtonConfiguration plainButtonConfiguration];
+    modeConfiguration.contentInsets = NSDirectionalEdgeInsetsMake(6, 12, 6, 12);
+    modeConfiguration.baseForegroundColor = UIColor.whiteColor;
+    modeConfiguration.background.backgroundColor = [UIColor colorWithWhite:0 alpha:0.42];
+    modeConfiguration.background.cornerRadius = 15;
+    _modeButton.configuration = modeConfiguration;
     _modeButton.showsMenuAsPrimaryAction = YES;
     [self addSubview:_modeButton];
     [self updateModeMenu];
