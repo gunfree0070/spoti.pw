@@ -35,6 +35,7 @@ NSString *SGTranslate(NSString *text) {
             @"Tabs": @"탭",
             @"Lyrics": @"가사",
             @"Lyrics sources": @"가사 소스",
+            @"Better Lyrics": @"Better Lyrics",
             @"Where lyrics come from": @"가사 제공처",
             @"Lyrics for every track": @"모든 트랙에 가사 표시",
             @"Name the source": @"가사 소스 이름 표시",

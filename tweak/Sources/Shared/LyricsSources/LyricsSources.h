@@ -110,6 +110,7 @@ NSArray<SGKaraokeLine *> *SGTTMLLines(NSString *xml);
 
 // The sources themselves, each in its own file.
 extern SGLyricsAsk SGBiniLyricsAsk;
+extern SGLyricsAsk SGBetterLyricsAsk;
 extern SGLyricsAsk SGMusixmatchAsk;
 extern SGLyricsAsk SGUnisonAsk;
 extern SGLyricsAsk SGNetEaseAsk;

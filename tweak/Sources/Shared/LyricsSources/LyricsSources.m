@@ -115,6 +115,7 @@ NSArray<SGLyricsProvider *> *SGLyricsAllProviders(void) {
         };
         all = @[
             make(@"binilyrics", @"BiniLyrics", @"Apple Music's own word timing, over a million tracks", SGBiniLyricsAsk),
+            make(@"betterlyrics", @"Better Lyrics", @"Word timing with translations and romanization when available", SGBetterLyricsAsk),
             make(@"musixmatch", @"Musixmatch", @"The catalogue Spotify licenses; matched by track, never by name", SGMusixmatchAsk),
             make(@"unison", @"Unison", @"Written by hand for Better Lyrics: few tracks, the best of them", SGUnisonAsk),
             make(@"netease", @"NetEase", @"Word timing only, for what the others line time; swearing is starred out", SGNetEaseAsk),
@@ -147,6 +148,12 @@ NSArray<NSString *> *SGLyricsOrder(void) {
     for (id key in keys) {
         if ([key isKindOfClass:NSString.class] && SGLyricsProviderFor(key) && ![order containsObject:key]) [order addObject:key];
     }
+    // Older installs already opted into external lyrics sources before Better Lyrics could provide
+    // Apple-style auxiliary tracks. Add the new provider at the end once, so the new buttons work
+    // without silently changing the user's existing priority order; it remains removable from the
+    // source settings page.
+    if ([stored isKindOfClass:NSArray.class] && order.count && ![order containsObject:@"betterlyrics"])
+        [order addObject:@"betterlyrics"];
     return order;
 }
 
@@ -212,6 +219,31 @@ static void setUp(void) {
 
 // Whether the source's lines are better than what the walk already has: any lines beat none, and
 // timing every word beats estimating them.
+static BOOL hasAlternateLines(NSArray<SGKaraokeLine *> *lines) {
+    for (SGKaraokeLine *line in lines) if (line.translationText.length || line.pronunciationText.length) return YES;
+    return NO;
+}
+
+static void mergeAlternateLines(SGLyricsResult *merged, SGLyricsResult *fresh) {
+    if (!merged.karaokeLines.count || !fresh.karaokeLines.count) return;
+    NSMutableDictionary<NSString *, SGKaraokeLine *> *byKey = [NSMutableDictionary dictionary];
+    for (SGKaraokeLine *line in fresh.karaokeLines) if (line.sourceKey.length) byKey[line.sourceKey] = line;
+    NSUInteger count = MIN(merged.karaokeLines.count, fresh.karaokeLines.count);
+    for (NSUInteger i = 0; i < count; i++) {
+        SGKaraokeLine *old = merged.karaokeLines[i];
+        SGKaraokeLine *new = old.sourceKey.length ? byKey[old.sourceKey] : fresh.karaokeLines[i];
+        if (!new) continue;
+        if (!old.translationText.length && new.translationText.length) {
+            old.translationText = new.translationText;
+            old.translationLine = new.translationLine;
+        }
+        if (!old.pronunciationText.length && new.pronunciationText.length) {
+            old.pronunciationText = new.pronunciationText;
+            old.pronunciationLine = new.pronunciationLine;
+        }
+    }
+}
+
 static BOOL betterLines(SGLyricsResult *merged, SGLyricsResult *fresh) {
     if (!fresh.karaokeLines.count) return NO;
     return !merged.karaokeLines.count || (fresh.wordTimed && !merged.wordTimed);
@@ -278,7 +310,7 @@ static void step(SGLyricsWalk *walk) {
     SGLyricsQuery *query = walk.query;
     SGLyricsResult *merged = walk.merged;
     // A source higher in the order has answered with timed lyrics: that is the answer.
-    if (merged.synced && merged.texts.count && merged.karaokeLines.count) {
+    if (merged.synced && merged.texts.count && merged.karaokeLines.count && hasAlternateLines(merged.karaokeLines)) {
         finish(walk);
         return;
     }
@@ -315,6 +347,8 @@ static void step(SGLyricsWalk *walk) {
             merged.karaokeLines = fresh.karaokeLines;
             merged.wordTimed = fresh.wordTimed;
             merged.provider = provider.name;
+        } else {
+            mergeAlternateLines(merged, fresh);
         }
         if (betterTexts(merged, fresh)) {
             merged.starts = fresh.starts;
