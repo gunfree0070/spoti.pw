@@ -217,13 +217,6 @@ static void setUp(void) {
     });
 }
 
-// Whether the source's lines are better than what the walk already has: any lines beat none, and
-// timing every word beats estimating them.
-static BOOL hasAlternateLines(NSArray<SGKaraokeLine *> *lines) {
-    for (SGKaraokeLine *line in lines) if (line.translationText.length || line.pronunciationText.length) return YES;
-    return NO;
-}
-
 static void mergeAlternateLines(SGLyricsResult *merged, SGLyricsResult *fresh) {
     if (!merged.karaokeLines.count || !fresh.karaokeLines.count) return;
     NSMutableDictionary<NSString *, SGKaraokeLine *> *byKey = [NSMutableDictionary dictionary];
@@ -309,8 +302,11 @@ static void finish(SGLyricsWalk *walk) {
 static void step(SGLyricsWalk *walk) {
     SGLyricsQuery *query = walk.query;
     SGLyricsResult *merged = walk.merged;
-    // A source higher in the order has answered with timed lyrics: that is the answer.
-    if (merged.synced && merged.texts.count && merged.karaokeLines.count && hasAlternateLines(merged.karaokeLines)) {
+    // A source higher in the order has answered with timed lyrics: that is the answer. Do not wait
+    // for an optional translation/romanization provider here. Spotify's card-list timeout is only
+    // a few seconds, so walking the rest of the network sources just to find an alternate row can
+    // make the entire lyrics card disappear before the first valid lyrics have been handed over.
+    if (merged.synced && merged.texts.count && merged.karaokeLines.count) {
         finish(walk);
         return;
     }
