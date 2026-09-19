@@ -904,6 +904,9 @@ static double secant(SGSweepKnot *knots, NSUInteger i) {
         [self dropLineViews];
         [self updateModeMenu];
     }
+    // The full-screen lyrics page can be the first place that asks for lyrics.  Do not wait for
+    // Spotify's collapsed player card to make that request on our behalf.
+    if (track && !_lines) SGKaraokeRequestLyrics(track);
     if (!_lines && track && (_lines = SGKaraokeLinesForTrack(track))) {
         SGLog(@"karaoke: showing %lu lines of %@", (unsigned long)_lines.count, track);
         SGKaraokeRequestAlternates(track);
