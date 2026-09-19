@@ -466,6 +466,9 @@ static void replace(void) {
     // while they would be coming, and the lines already up wait out the same grace before they go.
     for (NSNumber *delay in @[@1, @(kLyricsGrace)]) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            // Headers may have become available after the track callback.  This is a harmless no-op
+            // once the request is in flight, but closes the startup race that left the lyrics button dead.
+            SGKaraokeRequestLyrics(track);
             SGRPlayerLyricsChanged();
             if (sg_open && delay.doubleValue >= kLyricsGrace && !SGRPlayerLyricsAvailable()) {
                 SGLog(@"redesign player: no lyrics for the track that came on, the cover is back");

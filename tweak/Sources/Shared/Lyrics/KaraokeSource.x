@@ -61,7 +61,14 @@ static void rememberHeaders(NSURLSession *session, NSURLRequest *request) {
         NSString *name = kSpclientHeaders[i];
         if (all[name]) headers[name] = all[name];
     }
-    dispatch_async(dispatch_get_main_queue(), ^{ sg_spclientHeaders = headers; });
+    dispatch_async(dispatch_get_main_queue(), ^{
+        sg_spclientHeaders = headers;
+        // The player footer can ask for lyrics before Spotify has exposed the headers we need.
+        // Retry the current track as soon as the first authenticated request teaches us them;
+        // otherwise the lyrics page may stay empty until Spotify happens to request the track again.
+        NSString *track = SGKaraokePlayingTrack();
+        if (track.length && !sg_lyrics[track]) SGKaraokeRequestLyrics(track);
+    });
 }
 
 void SGKaraokeKeepLines(NSString *track, NSArray<SGKaraokeLine *> *lines) {

@@ -57,7 +57,6 @@ enum { kRingSize = 1024, kMonoFrames = 4096 };
 #pragma mark - shared between the threads
 
 static atomic_bool sg_enabled, sg_listening;
-static atomic_bool sg_background;
 static atomic_uint sg_generation;
 static atomic_uint_fast64_t sg_latencyBits;
 static atomic_uint sg_formatFlags, sg_lastFrames;
@@ -238,10 +237,9 @@ static BOOL startEngine(void) {
     if (!supported) return NO;
     NSError *error = nil;
     if (!sg_engine) {
-        // This engine emits haptics only; do not bind its lifetime to Spotify's AVAudioSession.
-        // The audio render callback remains the clock, while a standalone engine can be rearmed
-        // during the lock-screen audio background state without trying to take Spotify's session.
-        sg_engine = [[CHHapticEngine alloc] initAndReturnError:&error];
+        // Attach to Spotify's already-active playback session.  A standalone engine can compete
+        // with Spotify's audio session during the lock-screen transition and interrupt playback.
+        sg_engine = [[CHHapticEngine alloc] initWithAudioSession:AVAudioSession.sharedInstance error:&error];
         if (!sg_engine) {
             SGLog(@"music haptics: no haptic engine: %@", error);
             return NO;
@@ -402,13 +400,8 @@ static void *playerLoop(void *unused) {
     double lastEvent = 0;
     BOOL idle = YES;
     for (;;) {
-        BOOL background = atomic_load_explicit(&sg_background, memory_order_relaxed);
-        // A normal foreground idle engine can sleep indefinitely.  Spotify's audio session keeps
-        // the process alive with the screen locked, so keep a small watchdog running there to
-        // retry Core Haptics after iOS reports ApplicationSuspended.
-        NSTimeInterval retry = background ? 0.5 : quietAfter();
-        dispatch_time_t wait = idle && !background ? DISPATCH_TIME_FOREVER
-                                                    : dispatch_time(DISPATCH_TIME_NOW, (int64_t)(retry * NSEC_PER_SEC));
+        dispatch_time_t wait = idle ? DISPATCH_TIME_FOREVER
+                                    : dispatch_time(DISPATCH_TIME_NOW, (int64_t)(quietAfter() * NSEC_PER_SEC));
         dispatch_semaphore_wait(sg_wake, wait);
         @autoreleasepool {
             double now = hostSeconds(mach_absolute_time());
@@ -423,8 +416,7 @@ static void *playerLoop(void *unused) {
             // A stopped/reset engine must be rearmed even if the render callback has not queued a
             // new event yet.  This is what makes a screen-lock transition recover without opening
             // Spotify again.
-            if ((tail != head || atomic_load_explicit(&sg_engineStopped, memory_order_relaxed)
-                 || (background && !sg_engineRunning)) && startEngine()) {
+            if ((tail != head || atomic_load_explicit(&sg_engineStopped, memory_order_relaxed)) && startEngine()) {
                 for (; tail != head; tail++) {
                     SGRMusicEvent event = sg_ring[tail & (kRingSize - 1)];
                     if (event.kind == SGRMusicEventTap) playTap(&event);
@@ -440,7 +432,7 @@ static void *playerLoop(void *unused) {
                 continue;
             }
             if (now - lastEvent >= quietAfter()) stopRumble(CHHapticTimeImmediate);
-            if (!background && now - lastEvent >= kEngineStopAfter) {
+            if (now - lastEvent >= kEngineStopAfter) {
                 stopEngine();
                 idle = YES;
             }
@@ -498,7 +490,6 @@ void SGRSetMusicHapticsEnabled(BOOL on) {
     sg_wake = dispatch_semaphore_create(0);
     atomic_store(&sg_enabled, SGFlag(SGRKeyMusicHaptics, NO));
     atomic_store(&sg_listening, false);
-    atomic_store(&sg_background, false);
     updateListening();
     NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
     [center addObserverForName:AVAudioSessionRouteChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
@@ -519,24 +510,10 @@ void SGRSetMusicHapticsEnabled(BOOL on) {
     [center addObserverForName:AVAudioSessionMediaServicesWereResetNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
         requestEngineRestart();
     }];
-    // These notifications are delivered for the lock-screen transition as well as ordinary app
-    // switching.  Spotify keeps its audio render loop alive in the background.  Marking this state
-    // starts the player-thread watchdog without deliberately stopping a healthy engine at the exact
-    // moment the screen turns off.
-    [center addObserverForName:UIApplicationWillResignActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
-        atomic_store(&sg_background, true);
-        if (sg_wake) dispatch_semaphore_signal(sg_wake);
-    }];
-    [center addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
-        atomic_store(&sg_background, true);
-        if (sg_wake) dispatch_semaphore_signal(sg_wake);
-    }];
     [center addObserverForName:UIApplicationWillEnterForegroundNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
-        atomic_store(&sg_background, false);
         requestEngineRestart();
     }];
     [center addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
-        atomic_store(&sg_background, false);
         requestEngineRestart();
     }];
 }
